@@ -1,0 +1,667 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Conditions:
+  EMPTY_CognitoIdentityPoolName:
+    Fn::Equals:
+    - Ref: CognitoIdentityPoolName
+    - ''
+  EMPTY_CognitoUserPoolClientName:
+    Fn::Equals:
+    - Ref: CognitoUserPoolClientName
+    - ''
+  EMPTY_CognitoUserPoolName:
+    Fn::Equals:
+    - Ref: CognitoUserPoolName
+    - ''
+  EMPTY_FacebookClientID:
+    Fn::Equals:
+    - Ref: FacebookClientID
+    - ''
+  EMPTY_GoogleClientID:
+    Fn::Equals:
+    - Ref: GoogleClientID
+    - ''
+Description: Telstra Prototype Template - CD
+Outputs:
+  RuleName:
+    Description: Name of the newly created topic rule
+    Value:
+      Ref: myTopicRule
+  S3BucketName:
+    Description: Name of the newly created S3 bucket
+    Value:
+      Ref: myS3Bucket
+  S3BucketWebsite:
+    Description: URL of the s3 bucket
+    Value:
+      Fn::Join:
+      - ''
+      - - http://
+        - Ref: myS3Bucket
+        - .s3-website-
+        - Ref: AWS::Region
+        - .amazonaws.com
+  TableName:
+    Description: Table name of the newly created DynamoDB table
+    Value:
+      Ref: myDynamoDBTable
+Parameters:
+  CognitoIdentityPoolName:
+    Default: ''
+    Description: 'The name for the Cognito Identity Pool. If not provided, it''s generated
+
+      after given DeviceID.
+
+      '
+    Type: String
+  CognitoUserPoolClientName:
+    Default: ''
+    Description: 'The name for the Cognito User Pool. If not provided, it''s generated
+
+      after given DeviceID.
+
+      '
+    Type: String
+  CognitoUserPoolName:
+    Default: ''
+    Description: 'The name for the Cognito User Pool. If not provided, it''s generated
+
+      after given DeviceID.
+
+      '
+    Type: String
+  DeviceID:
+    AllowedPattern: '[a-zA-Z0-9_/#+]*'
+    ConstraintDescription: must contain only alphanumberic characters and underscores
+    Description: ID of the device which represents a sensor
+    MaxLength: '2048'
+    MinLength: '1'
+    Type: String
+  EndpointAddress:
+    Description: 'Endpoint address, can be fetched from the command line as follows:
+
+      aws iot describe-endpoint
+
+      '
+    MaxLength: '2048'
+    MinLength: '1'
+    Type: String
+  FacebookClientID:
+    Default: ''
+    Description: Facebook OAuth2 Client ID
+    Type: String
+  GoogleClientID:
+    Default: ''
+    Description: Google OAuth2 Client ID
+    Type: String
+  ReadCapacityUnits:
+    ConstraintDescription: must be between 5 and 10000
+    Default: '5'
+    Description: Provisioned read throughput
+    MaxValue: '10000'
+    MinValue: '5'
+    Type: Number
+  WriteCapacityUnits:
+    ConstraintDescription: must be between 5 and 10000
+    Default: '10'
+    Description: Provisioned write throughput
+    MaxValue: '10000'
+    MinValue: '5'
+    Type: Number
+Resources:
+  CognitoAuthenticatedRole:
+    Properties:
+      AssumeRolePolicyDocument:
+        Statement:
+        - Action: sts:AssumeRoleWithWebIdentity
+          Condition:
+            ForAnyValue:StringLike:
+              cognito-identity.amazonaws.com:amr: authenticated
+            StringEquals:
+              cognito-identity.amazonaws.com:aud:
+                Fn::GetAtt:
+                - CognitoIdentityPool
+                - IdentityPoolId
+          Effect: Allow
+          Principal:
+            Federated: cognito-identity.amazonaws.com
+        Version: '2012-10-17'
+      Policies:
+      - PolicyDocument:
+          Statement:
+          - Action:
+            - iot:GetThingShadow
+            Effect: Allow
+            Resource:
+              Fn::Join:
+              - ''
+              - - 'arn:aws:iot:'
+                - Ref: AWS::Region
+                - ':'
+                - Ref: AWS::AccountId
+                - :thing/
+                - Ref: DeviceID
+          Version: '2012-10-17'
+        PolicyName: root
+    Type: AWS::IAM::Role
+  CognitoFunctionRole:
+    Properties:
+      AssumeRolePolicyDocument:
+        Statement:
+          Action: sts:AssumeRole
+          Effect: Allow
+          Principal:
+            Service: lambda.amazonaws.com
+        Version: '2012-10-17'
+      Path: /
+      Policies:
+      - PolicyDocument:
+          Statement:
+          - Action:
+            - logs:CreateLogGroup
+            - logs:CreateLogStream
+            - logs:PutLogEvents
+            Effect: Allow
+            Resource: arn:aws:logs:*:*:*
+          - Action:
+            - cognito-identity:CreateIdentityPool
+            - cognito-identity:DeleteIdentityPool
+            - cognito-identity:UpdateIdentityPool
+            - cognito-identity:SetIdentityPoolRoles
+            - cognito-idp:*
+            Effect: Allow
+            Resource: '*'
+          - Action:
+            - iam:PassRole
+            Effect: Allow
+            Resource: '*'
+          Version: '2012-10-17'
+        PolicyName: cognito-writer
+    Type: AWS::IAM::Role
+  CognitoIdentityPool:
+    Properties:
+      Options:
+        AllowUnauthenticatedIdentities: 'true'
+        IdentityPoolName:
+          Fn::If:
+          - EMPTY_CognitoIdentityPoolName
+          - Fn::Join:
+            - ''
+            - - identity_pool_for_
+              - Ref: DeviceID
+          - Ref: CognitoIdentityPoolName
+        SupportedLoginProviders:
+          accounts.google.com:
+            Fn::If:
+            - EMPTY_GoogleClientID
+            - Ref: AWS::NoValue
+            - Ref: GoogleClientID
+          graph.facebook.com:
+            Fn::If:
+            - EMPTY_FacebookClientID
+            - Ref: AWS::NoValue
+            - Ref: FacebookClientID
+      ServiceToken:
+        Fn::GetAtt:
+        - CognitoLambdaFunction
+        - Arn
+    Type: Custom::CognitoIdentityPool
+  CognitoIdentityPoolRoles:
+    Properties:
+      Options:
+        IdentityPoolId:
+          Fn::GetAtt:
+          - CognitoIdentityPool
+          - IdentityPoolId
+        Roles:
+          authenticated:
+            Fn::GetAtt:
+            - CognitoAuthenticatedRole
+            - Arn
+          unauthenticated:
+            Fn::GetAtt:
+            - CognitoUnauthenticatedRole
+            - Arn
+      ServiceToken:
+        Fn::GetAtt:
+        - CognitoLambdaFunction
+        - Arn
+    Type: Custom::CognitoIdentityPoolRoles
+  CognitoLambdaFunction:
+    DependsOn:
+    - S3PutObjectFunctionRole
+    Properties:
+      Code:
+        S3Bucket: prothelp
+        S3Key: c114741d7065e5b8bff6c4f3388a15c6
+      Description: Used to create Custom::CognitoIdentityPool and Custom::CognitoIdentityPoolRoles
+      Handler: aws/cognito.handler
+      MemorySize: 128
+      Role:
+        Fn::GetAtt:
+        - CognitoFunctionRole
+        - Arn
+      Runtime: nodejs4.3
+      Timeout: 30
+    Type: AWS::Lambda::Function
+  CognitoUnauthenticatedRole:
+    Properties:
+      AssumeRolePolicyDocument:
+        Statement:
+        - Action: sts:AssumeRoleWithWebIdentity
+          Condition:
+            ForAnyValue:StringLike:
+              cognito-identity.amazonaws.com:amr: unauthenticated
+            StringEquals:
+              cognito-identity.amazonaws.com:aud:
+                Fn::GetAtt:
+                - CognitoIdentityPool
+                - IdentityPoolId
+          Effect: Allow
+          Principal:
+            Federated: cognito-identity.amazonaws.com
+        Version: '2012-10-17'
+      Policies:
+      - PolicyDocument:
+          Statement:
+          - Action:
+            - iot:GetThingShadow
+            Effect: Allow
+            Resource:
+              Fn::Join:
+              - ''
+              - - 'arn:aws:iot:'
+                - Ref: AWS::Region
+                - ':'
+                - Ref: AWS::AccountId
+                - :thing/
+                - Ref: DeviceID
+          Version: '2012-10-17'
+        PolicyName: root
+    Type: AWS::IAM::Role
+  ReferenceDB:
+    Properties:
+      AttributeDefinitions:
+      - AttributeName: key
+        AttributeType: S
+      KeySchema:
+      - AttributeName: key
+        KeyType: HASH
+      ProvisionedThroughput:
+        ReadCapacityUnits: 1
+        WriteCapacityUnits: 1
+      TableName:
+        Fn::Join:
+        - '-'
+        - - Ref: AWS::StackName
+          - reference
+    Type: AWS::DynamoDB::Table
+  RoleBasePolicy:
+    Properties:
+      Description:
+        Fn::Join:
+        - ' '
+        - - Base policy for all Lambda function roles in
+          - Ref: AWS::StackName
+          - .
+      PolicyDocument:
+        Statement:
+        - Action:
+          - logs:CreateLogGroup
+          - logs:CreateLogStream
+          - logs:PutLogEvents
+          Effect: Allow
+          Resource: arn:aws:logs:*:*:*
+        - Action:
+          - dynamodb:GetItem
+          - dynamodb:PutItem
+          - dynamodb:Scan
+          Effect: Allow
+          Resource:
+            Fn::Join:
+            - ''
+            - - 'arn:aws:dynamodb:'
+              - Ref: AWS::Region
+              - ':'
+              - Ref: AWS::AccountId
+              - :table/
+              - Ref: ReferenceDB
+        Version: '2012-10-17'
+    Type: AWS::IAM::ManagedPolicy
+  S3PutObjectFunction:
+    DependsOn:
+    - S3PutObjectFunctionRole
+    Properties:
+      Code:
+        S3Bucket: prothelp
+        S3Key: c114741d7065e5b8bff6c4f3388a15c6
+      Description: Used to put objects into S3.
+      Handler: aws/s3.putObject
+      Role:
+        Fn::GetAtt:
+        - S3PutObjectFunctionRole
+        - Arn
+      Runtime: nodejs4.3
+      Timeout: 30
+    Type: AWS::Lambda::Function
+  S3PutObjectFunctionRole:
+    Properties:
+      AssumeRolePolicyDocument:
+        Statement:
+        - Action:
+          - sts:AssumeRole
+          Effect: Allow
+          Principal:
+            Service:
+            - lambda.amazonaws.com
+        Version: '2012-10-17'
+      ManagedPolicyArns:
+      - Ref: RoleBasePolicy
+      Policies:
+      - PolicyDocument:
+          Statement:
+          - Action:
+            - s3:DeleteObject
+            - s3:ListBucket
+            - s3:PutObject
+            - s3:PutObjectAcl
+            Effect: Allow
+            Resource: '*'
+          Version: '2012-10-17'
+        PolicyName: S3Writer
+    Type: AWS::IAM::Role
+  heaterVarsFile:
+    Properties:
+      ACL: public-read
+      Body:
+        Fn::Join:
+        - '
+
+          '
+        - - var heaterVars = {
+          - Fn::Join:
+            - ''
+            - - '  region: '''
+              - Ref: AWS::Region
+              - ''','
+          - Fn::Join:
+            - ''
+            - - '  tableName: '''
+              - Ref: myDynamoDBTable
+              - ''','
+          - Fn::Join:
+            - ''
+            - - '  anonUserAccessKeyId: '''
+              - Ref: myAnonymousAccessUserAccessKey
+              - ''','
+          - Fn::Join:
+            - ''
+            - - '  anonUserSecretAccessKey: '''
+              - Fn::GetAtt:
+                - myAnonymousAccessUserAccessKey
+                - SecretAccessKey
+              - ''','
+          - Fn::Join:
+            - ''
+            - - '  deviceId: '''
+              - Ref: DeviceID
+              - ''','
+          - Fn::Join:
+            - ''
+            - - '  identityPoolId: '''
+              - Ref: CognitoIdentityPool
+              - ''','
+          - Fn::Join:
+            - ''
+            - - '  accountId: '''
+              - Ref: AWS::AccountId
+              - ''','
+          - Fn::Join:
+            - ''
+            - - '  addIotPolicyLambdaName: '''
+              - Ref: myAddIotPolicyLambdaFunction
+              - ''','
+          - Fn::Join:
+            - ''
+            - - '  googleOAuthClientId: '''
+              - Ref: GoogleClientID
+              - ''','
+          - Fn::Join:
+            - ''
+            - - '  facebookOAuthClientId: '''
+              - Ref: FacebookClientID
+              - ''','
+          - Fn::Join:
+            - ''
+            - - '  endpointAddress: '''
+              - Ref: EndpointAddress
+              - ''','
+          - '};'
+          - ''
+      Bucket:
+        Ref: myS3Bucket
+      Key: vars.js
+      ServiceToken:
+        Fn::GetAtt:
+        - S3PutObjectFunction
+        - Arn
+    Type: Custom::heaterVarsFile
+  myAddIotPolicyLambdaFunction:
+    Properties:
+      Code:
+        ZipFile:
+          Fn::Join:
+          - '
+
+            '
+          - - var AWS = require('aws-sdk');
+            - exports.handler = (event, context, callback) => {
+            - '  var iot = new AWS.Iot();'
+            - '  iot.attachPrincipalPolicy({'
+            - Fn::Join:
+              - ''
+              - - 'policyName: '''
+                - Ref: myIotPolicy
+                - ''','
+            - '    principal: event.identityId,'
+            - '  }, function(err, data) {'
+            - '    if(err) {'
+            - '      console.error(''error'', err);'
+            - '      context.done(err);'
+            - '    } else {'
+            - '      console.info(''ok'', data);'
+            - '      context.done(null, {status: ''ok''});'
+            - '    }'
+            - '  });'
+            - '};'
+      Handler: index.handler
+      Role:
+        Fn::GetAtt:
+        - myAddIotPolicyLambdaFunctionRole
+        - Arn
+      Runtime: nodejs4.3
+    Type: AWS::Lambda::Function
+  myAddIotPolicyLambdaFunctionRole:
+    Properties:
+      AssumeRolePolicyDocument:
+        Statement:
+        - Action:
+          - sts:AssumeRole
+          Effect: Allow
+          Principal:
+            Service:
+            - lambda.amazonaws.com
+        Version: '2012-10-17'
+      Policies:
+      - PolicyDocument:
+          Statement:
+          - Action:
+            - iot:AttachPrincipalPolicy
+            Effect: Allow
+            Resource: '*'
+          Version: '2012-10-17'
+        PolicyName: root
+    Type: AWS::IAM::Role
+  myAnonymousAccessUser:
+    Properties:
+      Policies:
+      - PolicyDocument:
+          Statement:
+          - Action:
+            - dynamodb:GetItem
+            - dynamodb:BatchGetItem
+            - dynamodb:Scan
+            - dynamodb:Query
+            Effect: Allow
+            Resource:
+              Fn::Join:
+              - ''
+              - - 'arn:aws:dynamodb:'
+                - Ref: AWS::Region
+                - ':'
+                - Ref: AWS::AccountId
+                - :table/
+                - Ref: myDynamoDBTable
+          - Action:
+            - lambda:InvokeFunction
+            Effect: Allow
+            Resource:
+              Fn::GetAtt:
+              - myAddIotPolicyLambdaFunction
+              - Arn
+          Version: '2012-10-17'
+        PolicyName: allow-read
+    Type: AWS::IAM::User
+  myAnonymousAccessUserAccessKey:
+    Properties:
+      UserName:
+        Ref: myAnonymousAccessUser
+    Type: AWS::IAM::AccessKey
+  myDynamoDBTable:
+    Properties:
+      AttributeDefinitions:
+      - AttributeName: deviceid
+        AttributeType: S
+      - AttributeName: timestamp
+        AttributeType: S
+      KeySchema:
+      - AttributeName: deviceid
+        KeyType: HASH
+      - AttributeName: timestamp
+        KeyType: RANGE
+      ProvisionedThroughput:
+        ReadCapacityUnits:
+          Ref: ReadCapacityUnits
+        WriteCapacityUnits:
+          Ref: WriteCapacityUnits
+    Type: AWS::DynamoDB::Table
+  myDynamoDBTableRolePutItem:
+    Properties:
+      AssumeRolePolicyDocument:
+        Statement:
+        - Action:
+          - sts:AssumeRole
+          Effect: Allow
+          Principal:
+            Service:
+            - iot.amazonaws.com
+        Version: '2012-10-17'
+      Path: /
+      Policies:
+      - PolicyDocument:
+          Statement:
+          - Action: dynamodb:PutItem
+            Effect: Allow
+            Resource:
+              Fn::Join:
+              - ''
+              - - 'arn:aws:dynamodb:'
+                - Ref: AWS::Region
+                - ':'
+                - Ref: AWS::AccountId
+                - :table/
+                - Ref: myDynamoDBTable
+          - Action: iot:*
+            Effect: Allow
+            Resource: '*'
+          Version: '2012-10-17'
+        PolicyName: allow-put-item
+    Type: AWS::IAM::Role
+  myHeaterAdminRole:
+    Properties:
+      AssumeRolePolicyDocument:
+        Statement:
+        - Action: sts:AssumeRoleWithWebIdentity
+          Effect: Allow
+          Principal:
+            Federated: cognito-identity.amazonaws.com
+        Version: '2012-10-17'
+      Policies:
+      - PolicyDocument:
+          Statement:
+          - Action:
+            - iot:GetThingShadow
+            Effect: Allow
+            Resource:
+              Fn::Join:
+              - ''
+              - - 'arn:aws:iot:'
+                - Ref: AWS::Region
+                - ':'
+                - Ref: AWS::AccountId
+                - :thing/
+                - Ref: DeviceID
+          - Action:
+            - iot:UpdateThingShadow
+            Effect: Allow
+            Resource:
+              Fn::Join:
+              - ''
+              - - 'arn:aws:iot:'
+                - Ref: AWS::Region
+                - ':'
+                - Ref: AWS::AccountId
+                - :thing/
+                - Ref: DeviceID
+          Version: '2012-10-17'
+        PolicyName: root
+    Type: AWS::IAM::Role
+  myIotPolicy:
+    Properties:
+      PolicyDocument:
+        Statement:
+        - Action: iot:*
+          Effect: Allow
+          Resource: '*'
+        Version: '2012-10-17'
+    Type: AWS::IoT::Policy
+  myS3Bucket:
+    Properties:
+      AccessControl: PublicRead
+      WebsiteConfiguration:
+        IndexDocument: index.html
+    Type: AWS::S3::Bucket
+  myTopicRule:
+    Properties:
+      TopicRulePayload:
+        Actions:
+        - DynamoDB:
+            HashKeyField: deviceid
+            HashKeyValue:
+              Ref: DeviceID
+            PayloadField: payload
+            RangeKeyField: timestamp
+            RangeKeyValue: ${timestamp()}
+            RoleArn:
+              Fn::GetAtt:
+              - myDynamoDBTableRolePutItem
+              - Arn
+            TableName:
+              Ref: myDynamoDBTable
+        RuleDisabled: 'false'
+        Sql:
+          Fn::Join:
+          - ''
+          - - SELECT state.reported.temp FROM '$aws/things/
+            - Ref: DeviceID
+            - /shadow/update'
+    Type: AWS::IoT::TopicRule
