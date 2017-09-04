@@ -7,7 +7,7 @@ This prototype utilises the AWS IoT cloud based platform to ingest the data.<br>
 A client application subscribes and display the data.<br> see:(http://www.orgsensor.com) 
 
 <p align="center">
-  <img src="iot_app.png" width="75%">
+  <img src="iot-app.png" width="75%">
 </p>
 
 ## Components
@@ -21,7 +21,7 @@ A client application subscribes and display the data.<br> see:(http://www.orgsen
 ## Architecture
 
 <p align="center">
-  <img src="aws_arch.png" width="75%">
+  <img src="aws-arch.png" width="75%">
 </p>
 
 The data flow is as follows:
