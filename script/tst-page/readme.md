@@ -4,7 +4,7 @@
 This example of IoT device reports current
 Temperature and responds to the status requests and simulates the on/off command.<br>
 This prototype utilises the AWS IoT cloud based platform to ingest the data.<br>
-A client application subscribes and display the data.<br> see:(http:/orgsensor.com) 
+A client application subscribes and display the data.<br> see:(http://orgsensor.com) 
 
 <p align="center">
   <img src="aws_heater.png" width="75%">
